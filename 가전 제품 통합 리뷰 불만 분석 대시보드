@@ -1,0 +1,244 @@
+import streamlit as st
+import pandas as pd
+import platform
+import re
+from collections import Counter
+import plotly.express as px
+
+# 대시보드 레이아웃 설정
+st.set_page_config(layout="wide")
+
+
+def create_summary_column(df):
+    """
+    [핵심 요인 분석 엔진]
+    리뷰 내용을 실시간으로 전수조사하여 '단어 + 명사형 종결' 형태의
+    '핵심요약' 열(Column)을 동적으로 추가하는 함수
+    """
+    summaries = []
+
+    for review in df["리뷰내용"]:
+        review_str = str(review)
+
+        # ----------------------------------------------------
+        # 1. 평점 1~3점대: 핵심 불만 요인 매칭 및 명사형 요약
+        # ----------------------------------------------------
+        if "소음" in review_str and "밤" in review_str:
+            summaries.append("야간 소음 공해")
+        elif "고주파" in review_str or ("소음" in review_str and "심함" in review_str):
+            summaries.append("고주파 소음 발생")
+        elif "물통 용량" in review_str or "비워줘야" in review_str:
+            summaries.append("물통 용량 부족")
+        elif "어플" in review_str and "안 돼" in review_str:
+            summaries.append("어플 연동 실패")
+        elif "인터페이스" in review_str or "버튼 조작" in review_str:
+            summaries.append("UI 조작 불편")
+        elif "화면이 자꾸 멈추" in review_str or "소프트웨어 에러" in review_str:
+            summaries.append("소프트웨어 구동 오류")
+        elif "가스켓" in review_str or "냉기가" in review_str:
+            summaries.append("가스켓 냉기 누출")
+        elif "흔들림" in review_str or "진동" in review_str or "수평" in review_str:
+            summaries.append("탈수 진동 및 유격")
+        elif "배터리" in review_str and ("10분" in review_str or "방전" in review_str):
+            summaries.append("배터리 조기 방전")
+        elif "통세척" in review_str and "에러" in review_str:
+            summaries.append("통세척 알림 오류")
+        elif "터치 패널" in review_str or "인식이 잘 안 돼" in review_str:
+            summaries.append("터치 패널 인식 불량")
+
+        # ----------------------------------------------------
+        # 2. 평점 4~5점대: 핵심 긍정 요인 매칭 및 명사형 요약
+        # ----------------------------------------------------
+        elif "설치" in review_str or "친절" in review_str:
+            summaries.append("방문 설치 만족")
+        elif "디자인" in review_str and "깔끔" in review_str:
+            summaries.append("디자인 만족")
+        elif "가성비" in review_str:
+            summaries.append("우수한 가성비")
+        elif "기본 기능" in review_str or "확실하네요" in review_str:
+            summaries.append("기본 성능 충실")
+        elif "에너지" in review_str or "환급" in review_str:
+            summaries.append("에너지 효율 우수")
+        elif "조용" in review_str or "대만족" in review_str:
+            summaries.append("저소음 만족")
+
+        # 3. 예외 처리 패턴
+        else:
+            summaries.append("일반 의견 수렴")
+
+    # 원본 데이터프레임의 카피본에 신규 컬럼 꽂기
+    df_polished = df.copy()
+    df_polished["핵심요약"] = summaries
+    return df_polished
+
+
+def load_and_preprocess_data(uploaded_file):
+    """
+    업로드된 CSV 또는 Excel 파일을 읽어와 전처리하는 함수
+    """
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+        else:
+            df = pd.read_excel(uploaded_file)
+
+        required_columns = ["제품명", "카테고리", "작성일자", "평점", "리뷰내용"]
+        if not all(col in df.columns for col in required_columns):
+            st.error("업로드된 파일의 컬럼 구조가 올바르지 않습니다. 필수 컬럼을 확인하세요.")
+            return None
+
+        df = df.dropna(subset=["리뷰내용", "평점"])
+        df["평점"] = df["평점"].astype(int)
+
+        # [핵심] 로드 직후 텍스트 자동 마이닝 엔진 가동하여 '핵심요약' 생성
+        df = create_summary_column(df)
+
+        return df
+    except Exception as e:
+        st.error(f"파일을 로드하는 중 오류가 발생했습니다: {e}")
+        return None
+
+
+def filter_data(df):
+    """
+    사이드바 필터를 생성하고 데이터를 필터링하는 함수
+    """
+    st.sidebar.header("데이터 필터 설정")
+    categories = sorted(df["카테고리"].unique())
+    selected_categories = st.sidebar.multiselect("가전 카테고리 선택", categories, default=categories)
+
+    filtered_df_by_cat = df[df["카테고리"].isin(selected_categories)]
+    products = sorted(filtered_df_by_cat["제품명"].unique())
+
+    selected_products = st.sidebar.multiselect("특정 제품명 선택", products, default=products)
+    final_df = filtered_df_by_cat[filtered_df_by_cat["제품명"].isin(selected_products)]
+    return final_df
+
+
+def main():
+    st.title("가전 제품 통합 리뷰 불만 분석 대시보드")
+    st.markdown("#### TEAM 12 (키워드 사냥꾼) - 한예호, 김민재")
+    st.write("---")
+
+    uploaded_file = st.file_uploader(
+        "all_appliances_reviews.csv 또는 엑셀 파일을 업로드하세요.",
+        type=["csv", "xlsx"],
+        key="app_review_uploader_unique_key"
+    )
+
+    if uploaded_file is not None:
+        df = load_and_preprocess_data(uploaded_file)
+
+        if df is not None:
+            filtered_df = filter_data(df)
+
+            if filtered_df.empty:
+                st.warning("선택 조건에 부합하는 데이터가 존재하지 않습니다. 필터를 다시 조정해 주세요.")
+                return
+
+            st.subheader("🔮 실시간 정제 및 요약 완료 데이터 리스트")
+            # 새로 생성된 '핵심요약' 컬럼을 테이블 상단에 함께 배치하여 가독성 증폭
+            st.dataframe(
+                filtered_df[["제품명", "카테고리", "평점", "핵심요약", "리뷰내용"]],
+                use_container_width=True,
+                hide_index=True
+            )
+            st.write("---")
+
+            # ----------------------------------------------------
+            # 1. Plotly 인터랙티브 평점 분포 그래프 구현
+            # ----------------------------------------------------
+            st.subheader("제품별 평점 분포")
+            st.info("💡 아래 막대그래프의 특정 평점 막대(바)를 클릭해 보세요! 클릭한 평점의 요약본만 하단에 완벽 연동됩니다.")
+
+            rating_counts = filtered_df["평점"].value_counts().reindex(range(1, 6), fill_value=0).reset_index(name="리뷰수")
+
+            color_map = {1: "#FF8A8A", 2: "#FFA8A8", 3: "#FFC9C9", 4: "#A2D2FF", 5: "#4EA8DE"}
+            rating_counts["색상"] = rating_counts["평점"].map(color_map)
+
+            fig_rating = px.bar(
+                rating_counts, x="평점", y="리뷰수",
+                text="리뷰수",
+                color="평점",
+                labels={"리뷰수": "리뷰 수", "평점": "평점 (점)"}
+            )
+            fig_rating.update_traces(
+                marker_color=rating_counts["색상"],
+                marker_line_color="#4A4A4A",
+                marker_line_width=1.2,
+                textposition="outside"
+            )
+            fig_rating.update_layout(
+                coloraxis_showscale=False,
+                xaxis=dict(tickmode="linear", tick0=1, dtick=1),
+                height=350,
+                clickmode="event+select",
+                margin=dict(t=30, b=20, l=20, r=20)
+            )
+
+            selected_points = st.plotly_chart(
+                fig_rating,
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="points"
+            )
+
+            selected_rating = None
+            if selected_points and "selection" in selected_points:
+                points = selected_points["selection"].get("points", [])
+                if points:
+                    selected_rating = points[0].get("x")
+
+            st.write("---")
+
+            # ----------------------------------------------------
+            # 2. 클릭 기반 실시간 연동 핵심요약 탑 15 차트 패널
+            # ----------------------------------------------------
+            if selected_rating:
+                st.markdown(f"### 🎯 현재 선택된 평점: `{selected_rating}점` 소비자 주요 피드백 현황")
+                if st.button("🔄 전체 데이터로 다시 보기"):
+                    st.rerun()
+                display_df = filtered_df[filtered_df["평점"] == selected_rating]
+            else:
+                st.markdown("### 📊 선택된 데이터 전체 핵심 요인 분포")
+                st.caption("위 그래프의 막대를 클릭하면 해당 평점의 요약 요인과 원문만 필터링됩니다.")
+                display_df = filtered_df
+
+            if not display_df.empty:
+                col1, col2 = st.columns([3, 2])
+
+                with col1:
+                    st.write("**소비자 반응 핵심 요약 Top 15 (가로 막대)**")
+
+                    # 지저분한 자연어가 아닌, 정제된 '핵심요약' 컬럼의 데이터 카운트 진행!
+                    summary_counts = Counter(display_df["핵심요약"])
+                    top_summaries = pd.DataFrame(summary_counts.most_common(15), columns=["요약요인", "빈도"])
+
+                    is_negative = selected_rating and selected_rating <= 3
+                    color_scale = "Reds" if is_negative else "Blues"
+
+                    fig_bar = px.bar(
+                        top_summaries, x="빈도", y="요약요인", orientation="h",
+                        color="빈도", color_continuous_scale=color_scale,
+                        labels={"빈도": "기록 횟수", "요약요인": "핵심 피드백 요인"}
+                    )
+                    fig_bar.update_layout(yaxis={"categoryorder": "total ascending"}, height=450,
+                                          margin=dict(t=10, b=10, l=10, r=10))
+                    st.plotly_chart(fig_bar, use_container_width=True)
+
+                with col2:
+                    st.write("**선택된 데이터의 리뷰 원문 및 핵심요약 매칭 표**")
+                    st.dataframe(
+                        display_df[["제품명", "평점", "핵심요약", "리뷰내용"]].head(30),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=450
+                    )
+            else:
+                st.info("해당 조건의 리뷰 데이터가 존재하지 않습니다.")
+    else:
+        st.info("분석을 시작하려면 상단의 파일 업로더 영역에 CSV나 Excel 파일을 드래그하거나 선택하여 업로드해 주세요.")
+
+
+if __name__ == "__main__":
+    main()
