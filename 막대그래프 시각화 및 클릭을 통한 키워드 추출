@@ -1,0 +1,201 @@
+import streamlit as st
+import pandas as pd
+import platform
+import re
+from collections import Counter
+import plotly.express as px
+
+# 대시보드 레이아웃 설정
+st.set_page_config(layout="wide")
+
+
+def load_and_preprocess_data(uploaded_file):
+    """
+    업로드된 CSV 또는 Excel 파일을 읽어와 전처리하는 함수
+    """
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+        else:
+            df = pd.read_excel(uploaded_file)
+
+        required_columns = ["제품명", "카테고리", "작성일자", "평점", "리뷰내용"]
+        if not all(col in df.columns for col in required_columns):
+            st.error("업로드된 파일의 컬럼 구조가 올바르지 않습니다. 필수 컬럼을 확인하세요.")
+            return None
+
+        df = df.dropna(subset=["리뷰내용", "평점"])
+        df["평점"] = df["평점"].astype(int)
+        return df
+    except Exception as e:
+        st.error(f"파일을 로드하는 중 오류가 발생했습니다: {e}")
+        return None
+
+
+def filter_data(df):
+    """
+    사이드바 필터를 생성하고 데이터를 필터링하는 함수
+    """
+    st.sidebar.header("데이터 필터 설정")
+    categories = sorted(df["카테고리"].unique())
+    selected_categories = st.sidebar.multiselect("가전 카테고리 선택", categories, default=categories)
+
+    filtered_df_by_cat = df[df["카테고리"].isin(selected_categories)]
+    products = sorted(filtered_df_by_cat["제품명"].unique())
+
+    selected_products = st.sidebar.multiselect("특정 제품명 선택", products, default=products)
+    final_df = filtered_df_by_cat[filtered_df_by_cat["제품명"].isin(selected_products)]
+    return final_df
+
+
+def analyze_keywords_by_rating(target_df):
+    """
+    선택된 평점 데이터의 리뷰 내용을 분석하여 키워드 빈도를 계산하는 함수
+    """
+    all_words = []
+    stopwords = {
+        "리뷰", "너무", "진짜", "정말", "아주", "많이", "조금", "약간", "제품", "물건",
+        "구매", "기기", "가전", "사용", "해서", "사서", "보니", "하고", "있고", "같아요",
+        "합니다", "안됨", "안되네요", "되요", "그냥", "하나", "사람", "이다", "와서",
+        "완전", "별로", "다시", "처음", "지금", "가지고", "같음", "이거", "그거", "좋음", "좋아요"
+    }
+
+    for review in target_df["리뷰내용"]:
+        review_str = str(review)
+        clean_review = re.sub(r"[^가-힣\s]", "", review_str)
+
+        for word in clean_review.split():
+            if len(word) >= 2 and word not in stopwords:
+                all_words.append(word)
+
+    return all_words
+
+
+def main():
+    st.title("가전 제품 통합 리뷰 불만 분석 대시보드")
+    st.write("TEAM 12 (키워드 사냥꾼) - 한예호, 김민재")
+    st.write("---")
+
+    uploaded_file = st.file_uploader(
+        "all_appliances_reviews.csv 또는 엑셀 파일을 업로드하세요.",
+        type=["csv", "xlsx"],
+        key="app_review_uploader_unique_key"
+    )
+
+    if uploaded_file is not None:
+        df = load_and_preprocess_data(uploaded_file)
+
+        if df is not None:
+            filtered_df = filter_data(df)
+
+            if filtered_df.empty:
+                st.warning("선택 조건에 부합하는 데이터가 존재하지 않습니다. 필터를 다시 조정해 주세요.")
+                return
+
+            st.subheader("필터링된 데이터 리스트")
+            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+            st.write("---")
+
+            # ----------------------------------------------------
+            # 1. Plotly 인터랙티브 평점 분포 그래프 구현
+            # ----------------------------------------------------
+            st.subheader("제품별 평점 분포")
+            st.info("💡 아래 막대그래프의 특정 평점 막대(바)를 클릭해 보세요! 클릭한 평점의 리뷰만 하단에 실시간 추출됩니다.")
+
+            rating_counts = filtered_df["평점"].value_counts().reindex(range(1, 6), fill_value=0).reset_index(name="리뷰수")
+
+            # 평점별 커스텀 컬러 매핑 적용
+            color_map = {1: "#FF8A8A", 2: "#FFA8A8", 3: "#FFC9C9", 4: "#A2D2FF", 5: "#4EA8DE"}
+            rating_counts["색상"] = rating_counts["평점"].map(color_map)
+
+            fig_rating = px.bar(
+                rating_counts, x="평점", y="리뷰수",
+                text="리뷰수",
+                color="평점",
+                labels={"리뷰수": "리뷰 수", "평점": "평점 (점)"}
+            )
+            fig_rating.update_traces(
+                marker_color=rating_counts["색상"],
+                marker_line_color="#4A4A4A",
+                marker_line_width=1.2,
+                textposition="outside"
+            )
+            fig_rating.update_layout(
+                coloraxis_showscale=False,
+                xaxis=dict(tickmode="linear", tick0=1, dtick=1),
+                height=350,
+                clickmode="event+select",
+                margin=dict(t=30, b=20, l=20, r=20)
+            )
+
+            # 선택 이벤트를 수집할 챠트 배치
+            selected_points = st.plotly_chart(
+                fig_rating,
+                use_container_width=True,
+                on_select="rerun",
+                selection_mode="points"
+            )
+
+            # 클릭 데이터 추출
+            selected_rating = None
+            if selected_points and "selection" in selected_points:
+                points = selected_points["selection"].get("points", [])
+                if points:
+                    selected_rating = points[0].get("x")
+
+            st.write("---")
+
+            # ----------------------------------------------------
+            # 2. 클릭 기반 실시간 연동 불만 키워드 분석 패널
+            # ----------------------------------------------------
+            if selected_rating:
+                st.markdown(f"### 🎯 현재 선택된 평점: `{selected_rating}점` 리뷰 분석 결과")
+                if st.button("🔄 전체 평점 데이터로 다시 보기"):
+                    st.rerun()
+                display_df = filtered_df[filtered_df["평점"] == selected_rating]
+            else:
+                st.markdown("### 📊 선택된 데이터 전체 핵심 키워드 순위")
+                st.caption("위 그래프의 막대를 클릭하면 해당 평점의 핵심 키워드와 원문만 필터링됩니다.")
+                display_df = filtered_df
+
+            if not display_df.empty:
+                all_words = analyze_keywords_by_rating(display_df)
+
+                col1, col2 = st.columns([3, 2])
+
+                with col1:
+                    st.write("**핵심 키워드 Top 15 (가로 막대)**")
+                    if all_words:
+                        word_counts = Counter(all_words)
+                        top_words = pd.DataFrame(word_counts.most_common(15), columns=["단어", "빈도"])
+
+                        is_negative = selected_rating and selected_rating <= 3
+                        color_scale = "Reds" if is_negative else "Blues"
+
+                        fig_bar = px.bar(
+                            top_words, x="빈도", y="단어", orientation="h",
+                            color="빈도", color_continuous_scale=color_scale,
+                            labels={"whitespace": "출현 횟수"}
+                        )
+                        fig_bar.update_layout(yaxis={"categoryorder": "total ascending"}, height=400,
+                                              margin=dict(t=10, b=10, l=10, r=10))
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                    else:
+                        st.info("분석할 단어가 부족합니다.")
+
+                with col2:
+                    st.write("**선택된 평점의 리뷰 원문 샘플 (최대 30개)**")
+                    st.dataframe(
+                        display_df[["제품명", "평점", "리뷰내용"]].head(30),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=400
+                    )
+            else:
+                st.info("해당 조건의 리뷰 데이터가 존재하지 않습니다.")
+    else:
+        st.info("분석을 시작하려면 상단의 파일 업로더 영역에 CSV나 Excel 파일을 드래그하거나 선택하여 업로드해 주세요.")
+
+
+if __name__ == "__main__":
+    main()
